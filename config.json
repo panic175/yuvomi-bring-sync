@@ -1,0 +1,10 @@
+{
+  "skip_lists": [],
+  "create_missing_categories": true,
+  "category_map": {
+    "Brot & Gebäck": "Backwaren",
+    "Milch & Käse": "Milchprodukte",
+    "Pflege & Gesundheit": "Drogerie",
+    "Fertig- & Tiefkühlprodukte": "Tiefkühl"
+  }
+}

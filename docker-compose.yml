@@ -1,0 +1,28 @@
+# Yuvomi <-> Bring! Bruecke, Docker-Host (/opt/yuvomi-bring)
+# Keine "ports:" - die Bruecke braucht nur eingehend nichts und spricht
+# selbst heraus. Zugangsdaten stehen in .env (nicht im Git).
+services:
+  yuvomi-bring:
+    build: .
+    image: yuvomi-bring-sync:1.0.0
+    container_name: yuvomi-bring
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      YUVOMI_URL: http://yuvomi:3000
+      POLL_SECONDS: "10"
+    volumes:
+      - ./data:/data
+    networks:
+      - web
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,time; sys.exit(0 if time.time()-os.path.getmtime('/data/last_ok') < 60 else 1)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+networks:
+  web:
+    external: true
