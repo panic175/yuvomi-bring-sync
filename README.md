@@ -11,7 +11,7 @@ Seiten im Takt von 10 Sekunden.
 | neuer Artikel | `POST /shopping/:id/items`, Kategorie aus dem Bring-Produktkatalog | `save_item` (Menge als `spec`) |
 | Name / Menge | `PATCH /shopping/items/:id` (Yuvomi gewinnt bei gleichzeitiger Änderung) | `update_item` |
 | abgehakt | in `items.recently` → `is_checked=1` (Bring gewinnt) | `complete_item` bzw. `ADD` beim Ent-haken |
-| gelöscht | nur bei bestätigtem Fehlen und nur wenn offen | `DELETE` → `remove_item` |
+| gelöscht | nach zweimal bestätigtem Fehlen, **auch abgehakt** (Bring entscheidet) | `DELETE` → `remove_item` |
 | Listen | Bring-Liste → Yuvomi-Liste, gematcht über den Namen, fehlende wird angelegt | – |
 
 Kategorien: `https://web.getbring.com/locale/catalog.<locale>.json` ist öffentlich
@@ -69,9 +69,15 @@ docker restart yuvomi-bring                       # Katalog und Zustand neu einl
 
 * Bring kennt kein `updated_at`: Konflikte werden nach dem Regelwerk oben
   entschieden, nicht nach Zeitstempel.
-* Bring räumt „Zuletzt gekauft" selbst auf. Ein dort verschwundener, bereits
-  gekaufter Artikel bleibt in Yuvomi stehen (Regel „nur offene Artikel löschen"),
-  bis er dort gelöscht wird – z. B. über „Abgehakte leeren".
+* **Fehlen heißt Löschen** (Entscheidung 25.10.2026): Bring entscheidet, was
+  existiert. Verschwindet ein Artikel dort, ist er nach zwei Takt auch in
+  Yuvomi weg – abgehakt oder nicht. Wer also in Bring „Zuletzt gekauft"
+  leert, räumt auch Yuvomi auf. Ausgenommen bleibt ein eigener Push, der nie
+  ankam: der wird bis zu `MAX_PUSH_ATTEMPTS` erneut versucht und lebt sonst
+  allein in Yuvomi (Löschen wäre Datenverlust, den wir selbst verursacht haben).
+* Bring vergibt desselben Artikel manchmal eine neue UUID (Löschen und Neu-
+  anlegen). Die alte Zeile wird dann nach zwei Takten gelöscht, bis dahin
+  steht der Artikel kurzzeitig doppelt in Yuvomi.
 * Umbenennen eines Artikels, während er in „Zuletzt gekauft" steht, wird auf das
   Ent-haken vertagt (der ADD-Pfad der Library würde ihn sonst zurück auf die
   Einkaufsliste holen).

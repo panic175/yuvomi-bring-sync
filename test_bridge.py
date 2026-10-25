@@ -252,28 +252,31 @@ class PlanTests(unittest.TestCase):
         actions = plan(bring=[], yuvomi=[y()], rows=[row(missing=1)])
         self.assertEqual(kinds(actions), ["y_delete", "row_drop"])
 
-    def test_confirmed_missing_bought_item_is_kept(self):
+    def test_confirmed_missing_bought_item_is_deleted(self):
+        # Bring decides what still exists - bought items are no longer exempt.
         actions = plan(bring=[], yuvomi=[y(checked=1)],
                        rows=[row(missing=1, b_checked=1, y_checked=1)])
-        self.assertEqual(kinds(actions), ["row_set"])
-        self.assertEqual(actions[0]["fields"], {"gone": 1, "missing": 0})
+        self.assertEqual(kinds(actions), ["y_delete", "row_drop"])
 
-    def test_gone_item_is_repushed_when_unchecked(self):
-        actions = plan(bring=[], yuvomi=[y(checked=0)],
-                       rows=[row(gone=1, b_checked=1, y_checked=1, attempts=0)])
+    def test_failed_push_is_retried_after_the_waiting_period(self):
+        actions = plan(bring=[], yuvomi=[y(checked=1)],
+                       rows=[row(gone=1, b_checked=1, y_checked=1,
+                                 missing=1, attempts=0)])
         self.assertEqual(kinds(actions), ["b_add", "row_set"])
         self.assertEqual(actions[1]["fields"]["attempts"], 1)
         self.assertEqual(actions[1]["fields"]["pending"], 1)
 
-    def test_gone_item_stays_put_while_bought(self):
-        actions = plan(bring=[], yuvomi=[y(checked=1)],
-                       rows=[row(gone=1, b_checked=1, y_checked=1)])
+    def test_failed_push_gives_up_instead_of_deleting(self):
+        actions = plan(bring=[], yuvomi=[y()],
+                       rows=[row(gone=1, attempts=MAX_PUSH_ATTEMPTS, missing=1)])
         self.assertEqual(actions, [])
 
-    def test_unchecked_push_failure_gives_up(self):
-        actions = plan(bring=[], yuvomi=[y()],
-                       rows=[row(gone=1, attempts=MAX_PUSH_ATTEMPTS)])
-        self.assertEqual(actions, [])
+    def test_push_that_never_appears_is_kept_not_deleted(self):
+        # Our own push did not show up - deleting would destroy data we caused.
+        actions = plan(bring=[], yuvomi=[y()], rows=[row(pending=1, missing=1)])
+        self.assertEqual(kinds(actions), ["row_set"])
+        self.assertEqual(actions[0]["fields"],
+                         {"gone": 1, "pending": 0, "missing": 0})
 
     def test_deleted_in_yuvomi_is_removed_from_bring(self):
         actions = plan(bring=[b()], yuvomi=[], rows=[row()])

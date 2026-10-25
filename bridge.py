@@ -204,13 +204,28 @@ def plan_list(*, blist_uuid: str, y_list_id, bring_items: list, y_items: list,
             continue
 
         if b is None:
-            # Gone from the Bring side. Delete only once absence is confirmed
-            # and only for open items - bought ones are left alone on purpose.
+            # Not in Bring any more. Absence is confirmed over several polls,
+            # then the item is deleted in Yuvomi - bought ones as well: Bring
+            # decides what still exists (decision of 25.10.2026, replacing the
+            # earlier "bought items are kept" rule).
+            missing = int(row.get("missing") or 0) + 1
+            if missing < MIN_MISSING:
+                actions.append({"kind": "row_set", "bring_uuid": b_uuid,
+                                "fields": {"missing": missing}})
+                continue
+
+            if row.get("pending"):
+                # Our own push never showed up: keep the item in Yuvomi and
+                # try again later instead of deleting something we caused.
+                actions.append({"kind": "row_set", "bring_uuid": b_uuid, "fields": {
+                    "gone": 1, "pending": 0, "missing": 0}})
+                continue
+
             if row.get("gone"):
-                if int(y["is_checked"]):
-                    continue                   # still bought: leave it alone
+                # Push already failed MAX times: this copy lives in Yuvomi
+                # alone, deleting it would destroy user data.
                 if int(row.get("attempts") or 0) >= MAX_PUSH_ATTEMPTS:
-                    log.error("Giving up: %r cannot be pushed back to Bring", y["name"])
+                    log.error("Giving up: %r never arrives in Bring", y["name"])
                     continue
                 actions.append({"kind": "b_add", "list_uuid": blist_uuid,
                                 "name": y["name"], "spec": y["quantity"] or "",
@@ -220,23 +235,8 @@ def plan_list(*, blist_uuid: str, y_list_id, bring_items: list, y_items: list,
                     "attempts": int(row.get("attempts") or 0) + 1}})
                 continue
 
-            missing = int(row.get("missing") or 0) + 1
-            fields = {"missing": missing}
-            if row.get("pending") and missing >= MIN_MISSING:
-                # Pushed but never appeared: mark as traceless, the item stays
-                # alive in Yuvomi.
-                fields.update(gone=1, pending=0, missing=0)
-            elif not row.get("pending") and missing >= MIN_MISSING:
-                if int(row["b_checked"]):
-                    # shortcut: Bring prunes "recently bought" itself and a
-                    # real deletion is indistinguishable - the item stays
-                    # until it is deleted in Yuvomi.
-                    fields.update(gone=1, missing=0)
-                else:
-                    actions.append({"kind": "y_delete", "item_id": row["yuvomi_item_id"]})
-                    actions.append({"kind": "row_drop", "bring_uuid": b_uuid})
-                    continue
-            actions.append({"kind": "row_set", "bring_uuid": b_uuid, "fields": fields})
+            actions.append({"kind": "y_delete", "item_id": row["yuvomi_item_id"]})
+            actions.append({"kind": "row_drop", "bring_uuid": b_uuid})
             continue
 
         if y is None:
