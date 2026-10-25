@@ -7,7 +7,8 @@ import unittest
 
 import bridge
 from bridge import (FALLBACK_CATEGORY, MAX_PUSH_ATTEMPTS, client_uuid,
-                    norm, parse_catalog, plan_list, resolve_category)
+                    norm, parse_catalog, plan_list, resolve_category,
+                    skip_reason, unpaired)
 
 CATALOGUE = {
     "catalog": {
@@ -92,6 +93,67 @@ class CategoryTests(unittest.TestCase):
     def test_no_section_at_all(self):
         self.assertEqual(resolve_category(None, {}, {"Sonstiges"}),
                          (FALLBACK_CATEGORY, None))
+
+
+class UnpairedTests(unittest.TestCase):
+    def test_paired_sides_need_no_join(self):
+        self.assertFalse(unpaired([row()], [b()], [y()]))
+
+    def test_lost_state_needs_a_join(self):
+        self.assertTrue(unpaired([], [b()], [y()]))
+
+    def test_new_item_on_either_side_needs_a_join(self):
+        self.assertTrue(unpaired([row()], [b(uuid="u2", name="Brot")], [y()]))
+        self.assertTrue(unpaired([row()], [b()], [y(item_id=11, name="Brot")]))
+
+
+class SkipReasonTests(unittest.TestCase):
+    """Every reason that saves Yuvomi requests (budget: 300/min per IP)."""
+
+    def kw(self, **over):
+        base = {"off": False, "mapping": {"yuvomi_list_id": 1},
+                "y_list_exists": True, "y_name_exists": True,
+                "b_items": [b()], "y_count": 3, "rows": [row()]}
+        base.update(over)
+        return base
+
+    def test_syncs_by_default(self):
+        self.assertIsNone(skip_reason(**self.kw()))
+
+    def test_unsubscribed_list_is_skipped(self):
+        self.assertEqual(skip_reason(**self.kw(off=True, y_name_exists=False)),
+                         "off")
+
+    def test_recreated_name_resubscribes(self):
+        self.assertIsNone(skip_reason(**self.kw(off=True, y_name_exists=True)))
+
+    def test_deleted_yuvomi_list_is_unsubscribed(self):
+        self.assertEqual(
+            skip_reason(**self.kw(y_list_exists=False, y_name_exists=False)),
+            "deleted")
+
+    def test_replaced_yuvomi_list_is_rematched(self):
+        self.assertEqual(
+            skip_reason(**self.kw(y_list_exists=False, y_name_exists=True)),
+            "remap")
+
+    def test_empty_bring_list_gets_no_twin(self):
+        self.assertEqual(
+            skip_reason(**self.kw(mapping=None, y_list_exists=False,
+                                  y_name_exists=False, b_items=[], y_count=0,
+                                  rows=[])),
+            "empty")
+
+    def test_idle_list_needs_no_requests(self):
+        self.assertEqual(skip_reason(**self.kw(b_items=[], y_count=0, rows=[])),
+                         "idle")
+
+    def test_item_count_alone_keeps_the_list_alive(self):
+        self.assertIsNone(skip_reason(**self.kw(b_items=[], rows=[])))
+
+    def test_stale_rows_are_still_cleaned_up(self):
+        self.assertIsNone(
+            skip_reason(**self.kw(b_items=[], y_count=0, rows=[row()])))
 
 
 class PlanTests(unittest.TestCase):

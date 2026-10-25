@@ -26,6 +26,7 @@ import logging
 import os
 import sqlite3
 import sys
+import time
 import uuid as uuidlib
 from pathlib import Path
 
@@ -90,6 +91,39 @@ def resolve_category(section, cfg, existing: set) -> tuple:
     if cfg.get("create_missing_categories", True):
         return section, section
     return FALLBACK_CATEGORY, None
+
+
+def unpaired(rows: list, b_items: list, y_items: list) -> bool:
+    """True when either side holds an item without a partner yet.
+
+    Those pairs only get created by reconcile, so it has to run even when
+    the planner found nothing to do.
+    """
+    b_paired = {r["bring_uuid"] for r in rows}
+    y_paired = {r["yuvomi_item_id"] for r in rows}
+    return (any(i["uuid"] not in b_paired for i in b_items)
+            or any(i["id"] not in y_paired for i in y_items))
+
+
+def skip_reason(*, off: bool, mapping, y_list_exists: bool, y_name_exists: bool,
+                b_items: list, y_count: int, rows: list) -> str | None:
+    """Why a list needs no work right now, or None if it does.
+
+    Every returned reason saves Yuvomi requests, and Yuvomi only allows 300
+    per minute per address - with a dozen mirrored lists the budget is gone
+    quickly if empty lists are polled too.
+    """
+    if off:
+        # Deleted in Yuvomi means "unsubscribe" - only a list of the same
+        # name brings the subscription back.
+        return None if y_name_exists else "off"
+    if mapping is not None and not y_list_exists:
+        return "remap" if y_name_exists else "deleted"
+    if mapping is None and not b_items:
+        return "empty"          # no twin for an empty Bring list
+    if not b_items and y_count == 0 and not rows:
+        return "idle"           # nothing on either side, nothing to compare
+    return None
 
 
 # ---------------------------------------------------------------- planning
@@ -352,6 +386,10 @@ CREATE TABLE IF NOT EXISTS list_map (
   yuvomi_list_id INTEGER NOT NULL,
   yuvomi_name    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS list_off (
+  bring_uuid TEXT PRIMARY KEY,
+  reason     TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS item_map (
   bring_uuid      TEXT PRIMARY KEY,
   bring_list_uuid TEXT NOT NULL,
@@ -392,6 +430,21 @@ class State:
 
     def clear_items(self, blist_uuid: str) -> None:
         self.conn.execute("DELETE FROM item_map WHERE bring_list_uuid = ?", (blist_uuid,))
+        self.conn.commit()
+
+    # opt-out lists (deleted in Yuvomi -> no longer mirrored)
+    def is_off(self, blist_uuid: str) -> bool:
+        row = self.conn.execute("SELECT 1 FROM list_off WHERE bring_uuid = ?",
+                                (blist_uuid,)).fetchone()
+        return row is not None
+
+    def set_off(self, blist_uuid: str, reason: str) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO list_off (bring_uuid, reason)"
+                          " VALUES (?, ?)", (blist_uuid, reason))
+        self.conn.commit()
+
+    def clear_off(self, blist_uuid: str) -> None:
+        self.conn.execute("DELETE FROM list_off WHERE bring_uuid = ?", (blist_uuid,))
         self.conn.commit()
 
     # items
@@ -522,48 +575,92 @@ class Bridge:
         self.dry_run = dry_run
         self.skip = {norm(n) for n in cfg.get("skip_lists", [])}
         self.attempts: dict = {}
+        self._cat_cache: tuple | None = None
 
-    async def sync_list(self, bl: dict, y_lists: list, y_categories: set) -> None:
-        mapping = self.state.list_map().get(bl["listUuid"])
-        if mapping is None or not any(l["id"] == mapping["yuvomi_list_id"] for l in y_lists):
-            # The Yuvomi list does not exist (yet): match it by name, else create.
-            target = next((l for l in y_lists if norm(l["name"]) == norm(bl["name"])), None)
+    async def yuvomi_categories(self) -> set:
+        """Category names, refreshed every ten minutes (Yuvomi counts every
+        request against a 300/min budget)."""
+        now = time.monotonic()
+        if self._cat_cache is None or now - self._cat_cache[0] > 600:
+            names = {c["name"] for c in await self.y.categories()}
+            self._cat_cache = (now, names)
+        return set(self._cat_cache[1])
+
+    async def sync_list(self, bl: dict, y_lists: list, y_counts: dict,
+                        y_categories: set) -> None:
+        b_uuid = bl["listUuid"]
+        b_items = await bring_items(self.bring, b_uuid)
+        rows = self.state.rows(b_uuid)
+        mapping = self.state.list_map().get(b_uuid)
+        by_name = next((l for l in y_lists if norm(l["name"]) == norm(bl["name"])), None)
+        mapped_id = mapping["yuvomi_list_id"] if mapping else None
+        target_id = mapped_id if mapped_id in {l["id"] for l in y_lists} else None
+        if target_id is None and by_name is not None:
+            target_id = by_name["id"]
+
+        reason = skip_reason(
+            off=self.state.is_off(b_uuid), mapping=mapping,
+            y_list_exists=mapped_id is not None and target_id == mapped_id,
+            y_name_exists=by_name is not None, b_items=b_items,
+            y_count=y_counts.get(target_id, 0), rows=rows)
+
+        if reason in ("off", "empty", "idle"):
+            if reason == "off":
+                log.debug("Bring list %r is unsubscribed, skipping", bl["name"])
+            return
+        if reason == "deleted":
+            log.warning("Yuvomi list %r was deleted - %r is no longer mirrored."
+                        " Create a Yuvomi list named %r to resume.",
+                        mapping["yuvomi_name"], bl["name"], bl["name"])
+            self.state.set_off(b_uuid, "yuvomi list deleted")
+            self.state.clear_items(b_uuid)
+            return
+
+        if reason == "remap" or self.state.is_off(b_uuid):
+            # Resubscribed, or the mapped list was replaced: the stored pairs
+            # point at a list that no longer exists, start from Bring again.
+            if self.state.is_off(b_uuid):
+                log.info("Bring list %r mirrored again via Yuvomi list %r",
+                         bl["name"], by_name["name"])
+            self.state.clear_off(b_uuid)
+            self.state.clear_items(b_uuid)
+            mapping = None
+
+        if mapping is None:
+            target = by_name
             if target is None:
                 if self.dry_run:
                     log.info("[dry-run] would create Yuvomi list %r", bl["name"])
                     return
                 target = await self.y.create_list(bl["name"])
                 y_lists.append(target)
+                y_counts[target["id"]] = 0
                 log.info("Created Yuvomi list %r", target["name"])
-            if mapping is not None:
-                # The previously mapped list was deleted: start over, Bring is
-                # the source of truth again.
-                log.warning("Yuvomi list %r is gone, recreating it",
-                            mapping["yuvomi_name"])
-                self.state.clear_items(bl["listUuid"])
-            self.state.map_list({"bring_uuid": bl["listUuid"], "bring_name": bl["name"]},
-                                target)
-            mapping = self.state.list_map()[bl["listUuid"]]
+            self.state.map_list({"bring_uuid": b_uuid, "bring_name": bl["name"]}, target)
+            mapping = self.state.list_map()[b_uuid]
 
         y_list_id = mapping["yuvomi_list_id"]
-        b_items = await bring_items(self.bring, bl["listUuid"])
         y_items = await self.y.items(y_list_id)
-        rows = self.state.rows(bl["listUuid"])
-        locale = (self.bring.user_list_settings.get(bl["listUuid"], {})
+        locale = (self.bring.user_list_settings.get(b_uuid, {})
                   .get("listArticleLanguage") or self.bring.user_locale)
         sections = await self.catalog.sections_for(locale)
 
-        actions = plan_list(blist_uuid=bl["listUuid"], y_list_id=y_list_id,
+        actions = plan_list(blist_uuid=b_uuid, y_list_id=y_list_id,
                             bring_items=b_items, y_items=y_items, rows=rows,
                             cfg=self.cfg, y_categories=y_categories,
                             cat_sections=sections, attempts=self.attempts)
+        if any(a["kind"] == "cat_create" for a in actions):
+            self._cat_cache = None
         if self.dry_run:
             for act in actions:
                 log.info("[dry-run] %s", json.dumps(act, ensure_ascii=False))
             return
-        if actions:
-            await execute(actions, self.y, self.bring, self.state)
-        await reconcile(self.bring, self.y, self.state, bl["listUuid"], y_list_id)
+        # reconcile costs one more request per list - with no changes and no
+        # loose pairs the state it would record is what we just read anyway.
+        if actions or unpaired(rows, b_items, y_items):
+            if actions:
+                await execute(actions, self.y, self.bring, self.state)
+            await reconcile(self.bring, self.y, self.state, b_uuid, y_list_id)
 
     async def cycle(self) -> None:
         if not self.bring.uuid:
@@ -571,13 +668,18 @@ class Bridge:
             log.info("Signed in to Bring")
         lists = await self.bring.load_lists()
         y_lists = await self.y.lists()
-        y_categories = {c["name"] for c in await self.y.categories()}
+        y_counts = {l["id"]: l.get("item_total", 0) for l in y_lists}
+        y_categories = await self.yuvomi_categories()
         for bl in lists.lists:
             if norm(bl.name) in self.skip:
                 continue
             try:
                 await self.sync_list({"listUuid": bl.listUuid, "name": bl.name},
-                                     y_lists, y_categories)
+                                     y_lists, y_counts, y_categories)
+            except YuvomiError as err:
+                if err.status == 429:
+                    raise                    # budget exhausted, stop the cycle
+                log.exception("List %r failed", bl.name)
             except Exception:
                 log.exception("List %r failed", bl.name)
 
@@ -602,6 +704,14 @@ async def run(args) -> int:
             try:
                 await bridge.cycle()
                 (DATA_DIR / "last_ok").touch()
+            except YuvomiError as err:
+                if err.status == 429:
+                    # Yuvomi allows 300 requests per minute per address -
+                    # waiting is the only correct answer, retrying is not.
+                    log.warning("Yuvomi rate limit hit, backing off 30 s")
+                    await asyncio.sleep(30)
+                else:
+                    log.exception("Sync cycle failed")
             except Exception:
                 log.exception("Sync cycle failed")
             if args.once:
