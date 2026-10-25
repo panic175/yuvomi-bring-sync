@@ -93,6 +93,19 @@ def resolve_category(section, cfg, existing: set) -> tuple:
     return FALLBACK_CATEGORY, None
 
 
+def first_pairing(b_checked, y_checked) -> dict | None:
+    """Checked state for a pair that has no common history yet.
+
+    Bring wins, exactly like in every later comparison. Without this the
+    difference goes straight into the pairing record as "never changed" and
+    would never be resolved - the reported case of bought items showing as
+    open in Yuvomi.
+    """
+    if int(b_checked) != int(y_checked):
+        return {"is_checked": bool(b_checked)}
+    return None
+
+
 def unpaired(rows: list, b_items: list, y_items: list) -> bool:
     """True when either side holds an item without a partner yet.
 
@@ -165,7 +178,8 @@ def plan_list(*, blist_uuid: str, y_list_id, bring_items: list, y_items: list,
             actions.append({"kind": "cat_create", "name": new_cat})
             y_categories.add(new_cat)
         actions.append({"kind": "y_create", "list_id": y_list_id, "name": b["name"],
-                        "quantity": b["spec"], "category": category})
+                        "quantity": b["spec"], "category": category,
+                        "checked": int(b["checked"])})
 
     # 2) Yuvomi items without a partner: push them to Bring.
     for y in free_y:
@@ -330,12 +344,18 @@ class Yuvomi:
             if err.status != 409:          # "category_exists" is not an error
                 raise
 
-    async def create_item(self, list_id, name: str, quantity: str, category: str) -> dict:
+    async def create_item(self, list_id, name: str, quantity: str, category: str,
+                          checked: int = 0) -> dict:
         body = {"name": name}
         if quantity:
             body["quantity"] = quantity
         if category:
             body["category"] = category
+        if checked:
+            # Without this an item Bring already lists as bought would land
+            # in Yuvomi as open, and the pairing record would then treat the
+            # difference as "never changed".
+            body["is_checked"] = True
         return (await self._call("POST", f"/shopping/{list_id}/items", body))["data"]
 
     async def patch_item(self, item_id, fields: dict) -> dict:
@@ -485,7 +505,8 @@ async def execute(actions: list, y: Yuvomi, bring, state: State) -> None:
                 await y.create_category(act["name"])
             elif kind == "y_create":
                 await y.create_item(act["list_id"], act["name"],
-                                    act["quantity"], act["category"])
+                                    act["quantity"], act["category"],
+                                    act.get("checked", 0))
             elif kind == "y_patch":
                 await y.patch_item(act["item_id"], act["fields"])
             elif kind == "y_delete":
@@ -544,7 +565,14 @@ async def reconcile(bring, y: Yuvomi, state: State, blist_uuid: str, y_list_id) 
         bucket = free_y.get(norm(b["name"]))
         if not bucket:
             continue
-        state.insert_row(blist_uuid, b, bucket.pop(0))
+        item = bucket.pop(0)
+        state.insert_row(blist_uuid, b, item)
+        patch = first_pairing(b["checked"], item["is_checked"])
+        if patch:
+            log.info("Pairing %r: Bring says bought=%s, mirroring to Yuvomi",
+                     item["name"], patch["is_checked"])
+            await y.patch_item(item["id"], patch)
+            item["is_checked"] = patch["is_checked"]   # recorded as reality below
 
     # Record the current values for every pair; counters stay untouched while
     # a side is missing, that is the planner's decision.

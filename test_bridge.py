@@ -7,8 +7,8 @@ import unittest
 
 import bridge
 from bridge import (FALLBACK_CATEGORY, MAX_PUSH_ATTEMPTS, client_uuid,
-                    norm, parse_catalog, plan_list, resolve_category,
-                    skip_reason, unpaired)
+                    first_pairing, norm, parse_catalog, plan_list,
+                    resolve_category, skip_reason, unpaired)
 
 CATALOGUE = {
     "catalog": {
@@ -95,6 +95,19 @@ class CategoryTests(unittest.TestCase):
                          (FALLBACK_CATEGORY, None))
 
 
+class FirstPairingTests(unittest.TestCase):
+    """A pair without common history must not record a difference as 'never
+    changed' - that is how bought items ended up open in Yuvomi."""
+
+    def test_bring_wins_when_the_states_differ(self):
+        self.assertEqual(first_pairing(1, 0), {"is_checked": True})
+        self.assertEqual(first_pairing(0, 1), {"is_checked": False})
+
+    def test_no_action_when_they_agree(self):
+        self.assertIsNone(first_pairing(1, 1))
+        self.assertIsNone(first_pairing(0, 0))
+
+
 class UnpairedTests(unittest.TestCase):
     def test_paired_sides_need_no_join(self):
         self.assertFalse(unpaired([row()], [b()], [y()]))
@@ -165,6 +178,15 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(kinds(actions), ["cat_create", "y_create"])
         self.assertEqual(actions[1]["category"], "Milchprodukte")
         self.assertEqual(actions[1]["quantity"], "1 L")
+
+    def test_new_bring_item_keeps_its_bought_state(self):
+        # Root cause of "bought in Bring, open in Yuvomi": the create call
+        # has to carry the state, otherwise the pairing record freezes 0/1.
+        bought = plan(bring=[b(checked=1)], cats={"Sonstiges"}, sections={})
+        self.assertEqual(kinds(bought), ["y_create"])
+        self.assertEqual(bought[0]["checked"], 1)
+        open_ = plan(bring=[b(checked=0)], cats={"Sonstiges"}, sections={})
+        self.assertEqual(open_[0]["checked"], 0)
 
     def test_new_yuvomi_item_is_pushed_to_bring(self):
         attempts = {}
