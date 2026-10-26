@@ -65,6 +65,28 @@ docker restart yuvomi-bring                       # Katalog und Zustand neu einl
 * `./data/last_ok` ist der Healthcheck-Marker; älter als 60 s → Container `unhealthy`.
 * Katalog wird einmal pro Start geladen, also nach Katalogänderung neu starten.
 
+## Tests
+
+```bash
+python3 -m unittest -v test_bridge
+```
+
+83 Tests, offline und ohne Fremdpakete – weder `aiohttp` noch `bring-api`
+werden gebraucht, die Suite läuft damit überall (lokal, im CI, im Container).
+Abgedeckt sind der Planner, die SQLite-Persistenz, der Yuvomi-Client, der
+Produktkatalog, das Paaren in `reconcile()`, die Aktionsausführung und die
+Orchestrierung inklusive 429- und Fehlerpfade.
+
+Abdeckung von `bridge.py`: **93 %** der Anweisungen (Stand 25.10.2026). Es
+fehlt bewusst nur noch
+`run()`/`main()` – der Einstiegspunkt braucht `aiohttp`, `bring-api` und Netz;
+er wird im Container über `--once` und `--dry-run` geprüft. Messung:
+
+```bash
+pip install coverage
+coverage run --source=bridge -m unittest test_bridge && coverage report -m
+```
+
 ## Bekannte Grenzen
 
 * Bring kennt kein `updated_at`: Konflikte werden nach dem Regelwerk oben
@@ -75,7 +97,7 @@ docker restart yuvomi-bring                       # Katalog und Zustand neu einl
   leert, räumt auch Yuvomi auf. Ausgenommen bleibt ein eigener Push, der nie
   ankam: der wird bis zu `MAX_PUSH_ATTEMPTS` erneut versucht und lebt sonst
   allein in Yuvomi (Löschen wäre Datenverlust, den wir selbst verursacht haben).
-* Bring vergibt desselben Artikel manchmal eine neue UUID (Löschen und Neu-
+* Bring vergibt demselben Artikel manchmal eine neue UUID (Löschen und Neu-
   anlegen). Die alte Zeile wird dann nach zwei Takten gelöscht, bis dahin
   steht der Artikel kurzzeitig doppelt in Yuvomi.
 * Umbenennen eines Artikels, während er in „Zuletzt gekauft" steht, wird auf das
