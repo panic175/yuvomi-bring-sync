@@ -35,7 +35,10 @@ jobs:
       - name: Build image
         run: docker build -t yuvomi-bring-sync .
       - name: Smoke-test the entrypoint
-        run: docker run --rm yuvomi-bring-sync python bridge.py --help
+        run: |
+          docker run --rm yuvomi-bring-sync python bridge.py --help
+          docker run --rm yuvomi-bring-sync python -c "import aiohttp, bring_api"
+          docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' yuvomi-bring-sync
 
   # Pushes the image to ghcr.io: every push to main gives :latest and the
   # commit sha, a v* tag additionally gives the version (:1.0.0 for v1.0.0).
