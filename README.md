@@ -70,11 +70,12 @@ docker compose up -d --build
 No `ports:` — the bridge only talks outward.
 
 CI also builds the image and pushes it to
-`ghcr.io/panic175/yuvomi-bring-sync` — `latest` and the commit sha on every
-push to `main`, plus a version tag when you push one:
+`ghcr.io/panic175/yuvomi-bring-sync` — `latest`, the commit sha and the next
+patch version on every push to `main` (`v1.0.0` → `:1.0.1`, tracked as a git
+tag so the next push knows where to continue):
 
 ```bash
-git tag v1.0.0 && git push --tags   # publishes :1.0.0
+git tag v1.1.0 && git push --tags   # name a release yourself, publishes :1.1.0
 ```
 
 so a host can `docker pull` instead of building.

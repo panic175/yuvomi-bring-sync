@@ -40,16 +40,30 @@ jobs:
           docker run --rm yuvomi-bring-sync python -c "import aiohttp, bring_api"
           docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' yuvomi-bring-sync
 
-  # Pushes the image to ghcr.io: every push to main gives :latest and the
-  # commit sha, a v* tag additionally gives the version (:1.0.0 for v1.0.0).
+  # Pushes the image to ghcr.io: every push to main bumps the patch version
+  # (v1.0.0 -> v1.0.1) and pushes that tag as the ledger, plus :latest and
+  # the commit sha; an explicit v* tag publishes its own version.
   publish:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write      # push the version tag back
       packages: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # tags are the version ledger
+      - name: Next patch version
+        id: ver
+        run: |
+          prev=$(git tag --list 'v*' --sort=-v:refname | head -n1)
+          if [ -z "$prev" ]; then
+            next=v1.0.0
+          else
+            n=${prev#v}
+            next=v${n%.*}.$((${n##*.} + 1))
+          fi
+          echo "next=$next" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -60,6 +74,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
+            type=raw,value=${{ steps.ver.outputs.next }},enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
@@ -69,6 +84,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+      - name: Record version tag
+        if: github.ref == 'refs/heads/main'
+        run: |
+          git tag "${{ steps.ver.outputs.next }}"
+          git push origin "${{ steps.ver.outputs.next }}"
 
   # Full-history scan instead of gitleaks-action: the action derives its
   # commit range from the push event, which breaks on a force-pushed root.
