@@ -70,8 +70,14 @@ docker compose up -d --build
 No `ports:` — the bridge only talks outward.
 
 CI also builds the image and pushes it to
-`ghcr.io/panic175/yuvomi-bring-sync:latest` (tags: `latest` and the commit
-sha) on every push to `main`, so a host can `docker pull` instead of building.
+`ghcr.io/panic175/yuvomi-bring-sync` — `latest` and the commit sha on every
+push to `main`, plus a version tag when you push one:
+
+```bash
+git tag v1.0.0 && git push --tags   # publishes :1.0.0
+```
+
+so a host can `docker pull` instead of building.
 
 **About the `web` network.** The compose file joins an *external* Docker
 network called `web` (`networks: web: external: true`). Docker networks are
