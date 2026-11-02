@@ -206,8 +206,7 @@ def plan_list(*, blist_uuid: str, y_list_id, bring_items: list, y_items: list,
         if b is None:
             # Not in Bring any more. Absence is confirmed over several polls,
             # then the item is deleted in Yuvomi - bought ones as well: Bring
-            # decides what still exists (decision of 25.10.2026, replacing the
-            # earlier "bought items are kept" rule).
+            # decides what still exists.
             missing = int(row.get("missing") or 0) + 1
             if missing < MIN_MISSING:
                 actions.append({"kind": "row_set", "bring_uuid": b_uuid,

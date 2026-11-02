@@ -1,5 +1,8 @@
 # Yuvomi <-> Bring! bridge. No "ports:" - the bridge only talks outward.
 # Credentials live in .env (never in git), see .env.example.
+# "web" is an external, shared Docker network (docker network create web):
+# stacks join it to reach each other's containers by name, here
+# http://yuvomi:3000. Docker's own per-project networks cannot do that.
 services:
   yuvomi-bring:
     build: .
