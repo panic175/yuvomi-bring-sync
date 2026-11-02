@@ -16,6 +16,9 @@ services:
       POLL_SECONDS: "10"
     volumes:
       - ./data:/data
+      # config.json is baked into the image; mount it so skip_lists etc. can
+      # be edited without rebuilding (docker restart yuvomi-bring picks it up)
+      - ./config.json:/app/config.json:ro
     networks:
       - web
     healthcheck:
