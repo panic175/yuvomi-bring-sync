@@ -5,11 +5,13 @@ Run with:  python3 -m unittest -v test_bridge
 
 import json
 import logging
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import bridge
 from bridge import (DEFAULT_LOCALE, FALLBACK_CATEGORY, MAX_PUSH_ATTEMPTS,
@@ -832,6 +834,39 @@ class CycleTests(unittest.IsolatedAsyncioTestCase):
                          extra_lists=["Party"])
         await env.bridge.cycle()
         self.assertEqual(list(env.state.list_map()), ["L1"])
+
+
+class MainTests(unittest.TestCase):
+    """main() is argparse plus a call into run().
+
+    run() needs aiohttp and bring-api, so it is stubbed here and exercised for
+    real by the container smoke test (``python bridge.py --help`` in the image).
+    """
+
+    def run_main(self, *argv):
+        seen = {}
+
+        async def fake_run(args):
+            seen["args"] = args
+            return 0
+
+        with mock.patch.object(bridge, "run", fake_run), \
+                mock.patch.object(sys, "argv", ["bridge.py", *argv]):
+            code = bridge.main()
+        return code, seen["args"]
+
+    def test_defaults(self):
+        code, args = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertEqual(args.config, str(bridge.HERE / "config.json"))
+        self.assertFalse(args.once)
+        self.assertFalse(args.dry_run)
+
+    def test_flags_reach_the_loop(self):
+        _, args = self.run_main("--once", "--dry-run", "--config", "/tmp/other.json")
+        self.assertTrue(args.once)
+        self.assertTrue(args.dry_run)
+        self.assertEqual(args.config, "/tmp/other.json")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
-# Yuvomi <-> Bring! Bruecke, Docker-Host (/opt/yuvomi-bring)
-# Keine "ports:" - die Bruecke braucht nur eingehend nichts und spricht
-# selbst heraus. Zugangsdaten stehen in .env (nicht im Git).
+# Yuvomi <-> Bring! bridge. No "ports:" - the bridge only talks outward.
+# Credentials live in .env (never in git), see .env.example.
 services:
   yuvomi-bring:
     build: .
